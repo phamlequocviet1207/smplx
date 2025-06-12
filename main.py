@@ -26,11 +26,11 @@ model = smplx.create(
 )
 
 # Debug: Print available joint-related information
-# print("Number of body joints:", model.NUM_BODY_JOINTS)
-# print("Number of face joints:", model.NUM_FACE_JOINTS)
-# print("Number of hand joints:", model.NUM_HAND_JOINTS)
-# print("Total number of joints:", model.NUM_JOINTS)
-# print("Joint regressor shape:", model.J_regressor.shape if model.J_regressor is not None else "Not available")
+print("Number of body joints:", model.NUM_BODY_JOINTS)
+print("Number of face joints:", model.NUM_FACE_JOINTS)
+print("Number of hand joints:", model.NUM_HAND_JOINTS)
+print("Total number of joints:", model.NUM_JOINTS)
+print("Joint regressor shape:", model.J_regressor.shape if model.J_regressor is not None else "Not available")
 
 # Generate random shape and expression parameters
 betas = torch.randn([1, model.num_betas], dtype=torch.float32)
@@ -45,34 +45,34 @@ right_hand_pose = torch.zeros([1, 6], dtype=torch.float32)  # 6 PCA components f
 
 # Apply pose based on your joint list
 # Example: Bend right elbow (index 14 in your list → SMPL-X index 19)
-body_pose[0, 16, 2] = 15  # Right elbow, Z-axis rotation
+body_pose[0, 20, 2] = -1  # Right elbow, Z-axis rotation
 # Example: Slight jaw open (index 0-10, approx. jaw)
 # face_pose[0, 1] = -0.5  # Y-axis rotation for jaw
 
 # Define mapping (adjust indices based on your 54-joint setup)
 body_mapping = {
     # Mediapipe -> SMPLX
-    23: 1,   # Left Hip
-    24: 2,   # Right Hip
-    # No    Spine1          3	        
-    25: 4,   # Left Knee
-    26: 5,   # Right Knee
-    27: 7,   # Left Ankle
-    # No    Spine2          6
-    28: 8,    # Right Ankle
-    # No    Spine3          9
-    29: 10, # Left Foot
-    30: 11, # Right Foot
-    # 12	Neck	        No
-    # 13	Left Collar	    No
-    # 14	Right Collar	No
-    # 15	Head	        No
-    11: 16,  # Left Shoulder
-    12: 17,  # Right Shoulder
-    13: 18,  # Left Elbow
-    14: 19,  # Right Elbow
-    15: 20,  # Left Wrist
-    16: 21   # Right Wrist
+    23: 0,   # Left Hip
+    24: 1,   # Right Hip	 
+    # ?: 2,    # Unkown, maybe somewhere above the hips       
+    25: 3,   # Left Knee
+    26: 4,   # Right Knee
+    # ?:5, # Unknown, somewhere near the chest LEft
+    27: 6,   # Left Ankle
+    28: 7,    # Right Ankle
+    # ?:8, # Unknown, somewhere near the chest Right
+    29: 9, # Left Foot
+    30: 10, # Right Foot
+    # 11	Neck	        
+    # 12	Left Collar	    No? Shoulder
+    # 13	Right Collar	No? Shoulder
+    # 14	Head	        No? Neck
+    11: 15,  # Left Shoulder
+    12: 16,  # Right Shoulder
+    13: 17,  # Left Elbow
+    14: 18,  # Right Elbow
+    15: 19,  # Left Wrist
+    16: 20   # Right Wrist
     
     
 }
