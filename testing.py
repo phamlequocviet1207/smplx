@@ -6,6 +6,20 @@ import trimesh
 import numpy as np
 import mediapipe as mp
 import cv2
+from OpenGL import GL
+import pyglet.gl as gl
+
+# Check OpenGL version and extensions
+try:
+    window = pyglet.window.Window(visible=False)
+    print("OpenGL Version:", gl.glGetString(GL.GL_VERSION).decode('utf-8'))
+    extensions = gl.glGetString(GL.GL_EXTENSIONS).decode('utf-8')
+    print("OpenGL Extensions:", extensions)
+    if "WGL_ARB_pixel_format" not in extensions:
+        print("Warning: WGL_ARB_pixel_format not supported. Rendering may fail.")
+    window.close()
+except Exception as e:
+    print(f"Failed to check OpenGL version/extensions: {e}")
 
 # Path to the folder containing the SMPL-X model files
 model_folder = r'D:\SAIR_LAB\smpl\models_smplx_v1_1\models'
@@ -16,14 +30,14 @@ model_file = os.path.join(smplx_folder, 'SMPLX_NEUTRAL.npz')
 if not os.path.exists(model_file):
     raise FileNotFoundError(f"SMPL-X model file not found at {model_file}. Please check the path and model files.")
 
-# Create the SMPL-X model with hand and face pose support
+# Create the SMPL-X model
 model = smplx.create(
     model_path=model_folder,
     model_type='smplx',
     gender='neutral',
     num_betas=10,
     num_expression_coeffs=10,
-    num_pca_comps=6,  # 6 PCA components per hand
+    num_pca_comps=6,
     ext='npz'
 )
 
@@ -32,11 +46,11 @@ betas = torch.randn([1, model.num_betas], dtype=torch.float32)
 expression = torch.randn([1, model.num_expression_coeffs], dtype=torch.float32)
 
 # Define pose parameters
-global_orient = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float32)  # No rotation, upright position
-body_pose = torch.zeros([1, 21, 3], dtype=torch.float32)  # 21 body joints
-face_pose = torch.zeros([1, 3], dtype=torch.float32)  # Jaw pose
-left_hand_pose = torch.zeros([1, 6], dtype=torch.float32)  # 6 PCA components for left hand
-right_hand_pose = torch.zeros([1, 6], dtype=torch.float32)  # 6 PCA components for right hand
+global_orient = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float32)
+body_pose = torch.zeros([1, 21, 3], dtype=torch.float32)
+face_pose = torch.zeros([1, 3], dtype=torch.float32)
+left_hand_pose = torch.zeros([1, 6], dtype=torch.float32)
+right_hand_pose = torch.zeros([1, 6], dtype=torch.float32)
 
 # Define mapping (Mediapipe -> SMPL-X joint indices)
 body_mapping = {
@@ -56,39 +70,6 @@ body_mapping = {
     16: 20  # Right Wrist
 }
 
-def output_smpl():
-    # Forward pass to generate vertices and joints with updated pose
-    output = model(
-        betas=betas,
-        expression=expression,
-        global_orient=global_orient,
-        body_pose=body_pose,
-        jaw_pose=face_pose,
-        left_hand_pose=left_hand_pose,
-        right_hand_pose=right_hand_pose,
-        return_verts=True
-    )
-    vertices = output.vertices.detach().cpu().numpy().squeeze()
-    joints = output.joints.detach().cpu().numpy().squeeze()
-
-    # Create a trimesh object for visualization
-    vertex_colors = np.ones([vertices.shape[0], 4]) * [0.3, 0.3, 0.3, 0.8]
-    tri_mesh = trimesh.Trimesh(vertices=vertices, faces=model.faces, vertex_colors=vertex_colors)
-
-    # Create a pyrender mesh and scene
-    mesh = pyrender.Mesh.from_trimesh(tri_mesh)
-    scene = pyrender.Scene()
-    scene.add(mesh)
-
-    # Add camera alignment
-    camera = pyrender.PerspectiveCamera(yfov=np.pi / 3.0, aspectRatio=1.0)
-    camera_pose = np.eye(4)
-    camera_pose[:3, 3] = [0, 0, 3]  # Move camera back along Z-axis
-    scene.add(camera, pose=camera_pose)
-
-    # Visualize the model (non-blocking)
-    pyrender.Viewer(scene, use_raymond_lighting=True, run_in_thread=True)
-
 # Initialize MediaPipe Pose
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
@@ -99,32 +80,94 @@ cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     raise RuntimeError("Failed to open webcam.")
 
+# Initialize pyrender scene and offscreen renderer
+scene = pyrender.Scene()
+camera = pyrender.PerspectiveCamera(yfov=np.pi / 3.0, aspectRatio=1.0)
+camera_pose = np.eye(4)
+camera_pose[:3, 3] = [0, 0, 3]
+scene.add(camera, pose=camera_pose)
+renderer = pyrender.OffscreenRenderer(viewport_width=640, viewport_height=480)
 
-while cap.isOpened():
-    ret, frame = cap.read()
-    if not ret:
-        print("Failed to capture frame from webcam.")
-        break
+try:
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to capture frame from webcam.")
+            break
 
-    # Convert BGR to RGB for MediaPipe
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    frame_rgb.flags.writeable = True  # Ensure the array is writable
-    results = pose.process(frame_rgb)
+        # Convert BGR to RGB for MediaPipe
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_rgb.flags.writeable = True
+        results = pose.process(frame_rgb)
 
-    if results.pose_landmarks:
-        # Draw landmarks on frame (for visualization)
-        mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+        if results.pose_landmarks:
+            # Draw landmarks on frame
+            mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
-        # Get landmark coordinates (normalized [0,1])
-        landmarks = results.pose_landmarks.landmark
-        h, w, _ = frame.shape
+            # Get landmark coordinates
+            landmarks = results.pose_landmarks.landmark
+            h, w, _ = frame.shape
 
-    # Display the webcam feed
-    cv2.imshow('Screen', frame)
-    if cv2.waitKey(10) & 0xFF == ord('q'):
-        break
+            # Update right elbow pose (SMPL-X index 18, MediaPipe landmark 14)
+            right_elbow_idx = 14  # MediaPipe right elbow
+            right_wrist_idx = 16  # MediaPipe right wrist
+            if (right_elbow_idx < len(landmarks) and right_wrist_idx < len(landmarks) and
+                landmarks[right_elbow_idx].visibility > 0.5 and landmarks[right_wrist_idx].visibility > 0.5):
+                elbow = landmarks[right_elbow_idx]
+                wrist = landmarks[right_wrist_idx]
+                # Calculate angle based on elbow-to-wrist vector (simplified 2D projection)
+                dx = (wrist.x - elbow.x) * w
+                dy = (wrist.y - elbow.y) * h
+                angle = np.arctan2(dy, dx)  # Angle in radians
+                print(np.degrees(angle))
+                # Scale angle to reasonable range for SMPL-X (e.g., -1.5 to 1.5 radians)
+                angle = np.clip(angle, -1.5, 1.5)
+                # print(angle)
+                body_pose[0, 18, 2] = angle  # Apply to Z-axis of right elbow
+            else:
+                body_pose[0, 18, 2] = 0.0  # Reset if landmarks are not reliable
 
-# Cleanup
-cap.release()
-cv2.destroyAllWindows()
-pose.close()
+        # Forward pass to generate vertices and joints
+        output = model(
+            betas=betas,
+            expression=expression,
+            global_orient=global_orient,
+            body_pose=body_pose,
+            jaw_pose=face_pose,
+            left_hand_pose=left_hand_pose,
+            right_hand_pose=right_hand_pose,
+            return_verts=True
+        )
+        vertices = output.vertices.detach().cpu().numpy().squeeze()
+        joints = output.joints.detach().cpu().numpy().squeeze()
+
+        # Create trimesh object
+        vertex_colors = np.ones([vertices.shape[0], 4]) * [0.3, 0.3, 0.3, 0.8]
+        tri_mesh = trimesh.Trimesh(vertices=vertices, faces=model.faces, vertex_colors=vertex_colors)
+
+        # Update scene with new mesh
+        for node in list(scene.get_nodes()):  # Use list to avoid modifying while iterating
+            if isinstance(node, pyrender.Node) and isinstance(node.mesh, pyrender.Mesh):
+                scene.remove_node(node)
+        mesh = pyrender.Mesh.from_trimesh(tri_mesh)
+        scene.add(mesh)
+
+        # Render to image
+        try:
+            color, _ = renderer.render(scene)
+            color_bgr = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
+            cv2.imshow('SMPL-X Render', color_bgr)
+        except Exception as e:
+            print(f"Rendering failed: {e}")
+            continue
+
+        # Display webcam feed
+        cv2.imshow('Webcam', frame)
+        if cv2.waitKey(10) & 0xFF == ord('q'):
+            break
+
+finally:
+    cap.release()
+    cv2.destroyAllWindows()
+    pose.close()
+    renderer.delete()
