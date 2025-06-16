@@ -6,20 +6,6 @@ import trimesh
 import numpy as np
 import mediapipe as mp
 import cv2
-from OpenGL import GL
-import pyglet.gl as gl
-
-# Check OpenGL version and extensions
-try:
-    window = pyglet.window.Window(visible=False)
-    print("OpenGL Version:", gl.glGetString(GL.GL_VERSION).decode('utf-8'))
-    extensions = gl.glGetString(GL.GL_EXTENSIONS).decode('utf-8')
-    print("OpenGL Extensions:", extensions)
-    if "WGL_ARB_pixel_format" not in extensions:
-        print("Warning: WGL_ARB_pixel_format not supported. Rendering may fail.")
-    window.close()
-except Exception as e:
-    print(f"Failed to check OpenGL version/extensions: {e}")
 
 # Path to the folder containing the SMPL-X model files
 model_folder = r'D:\SAIR_LAB\smpl\models_smplx_v1_1\models'
@@ -81,12 +67,33 @@ if not cap.isOpened():
     raise RuntimeError("Failed to open webcam.")
 
 # Initialize pyrender scene and offscreen renderer
-scene = pyrender.Scene()
-camera = pyrender.PerspectiveCamera(yfov=np.pi / 3.0, aspectRatio=1.0)
+scene = pyrender.Scene(ambient_light=[0.5, 0.5, 0.5], bg_color=[0.2, 0.2, 0.2])
+camera = pyrender.PerspectiveCamera(yfov=np.pi / 3.0, aspectRatio=720/480)
 camera_pose = np.eye(4)
-camera_pose[:3, 3] = [0, 0, 3]
+camera_pose[:3, 3] = [0.0, 0.0, 2.5]
+camera_pose[:3, :3] = np.array([
+    [0.87, 0.0, 0.5],
+    [0.0, 1.0, 0.0],
+    [-0.5, 0.0, 0.87]
+])
 scene.add(camera, pose=camera_pose)
-renderer = pyrender.OffscreenRenderer(viewport_width=640, viewport_height=480)
+
+# Add multiple lights for better 3D effect
+light1 = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=4.0)
+light1_pose = np.eye(4)
+light1_pose[:3, 3] = [1, 1, 2]
+scene.add(light1, pose=light1_pose)
+light2 = pyrender.PointLight(color=[1.0, 1.0, 1.0], intensity=4.0)
+light2_pose = np.eye(4)
+light2_pose[:3, 3] = [-1, -1, 2]
+scene.add(light2, pose=light2_pose)
+
+renderer = pyrender.OffscreenRenderer(viewport_width=720, viewport_height=480)
+
+# Create output directory for debug frames
+output_dir = "render_debug"
+os.makedirs(output_dir, exist_ok=True)
+frame_count = 0
 
 try:
     while cap.isOpened():
@@ -109,23 +116,34 @@ try:
             h, w, _ = frame.shape
 
             # Update right elbow pose (SMPL-X index 18, MediaPipe landmark 14)
-            right_elbow_idx = 14  # MediaPipe right elbow
-            right_wrist_idx = 16  # MediaPipe right wrist
+            right_elbow_idx = 14
+            right_wrist_idx = 16
+            right_shoulder_idx = 12
             if (right_elbow_idx < len(landmarks) and right_wrist_idx < len(landmarks) and
-                landmarks[right_elbow_idx].visibility > 0.5 and landmarks[right_wrist_idx].visibility > 0.5):
+                right_shoulder_idx < len(landmarks) and
+                landmarks[right_elbow_idx].visibility > 0.5 and
+                landmarks[right_wrist_idx].visibility > 0.5 and
+                landmarks[right_shoulder_idx].visibility > 0.5):
                 elbow = landmarks[right_elbow_idx]
                 wrist = landmarks[right_wrist_idx]
-                # Calculate angle based on elbow-to-wrist vector (simplified 2D projection)
-                dx = (wrist.x - elbow.x) * w
-                dy = (wrist.y - elbow.y) * h
-                angle = np.arctan2(dy, dx)  # Angle in radians
-                print(np.degrees(angle))
-                # Scale angle to reasonable range for SMPL-X (e.g., -1.5 to 1.5 radians)
-                angle = np.clip(angle, -1.5, 1.5)
-                # print(angle)
-                body_pose[0, 18, 2] = angle  # Apply to Z-axis of right elbow
+                shoulder = landmarks[right_shoulder_idx]
+                # Compute 3D vectors (scale z by 1000 as it's in relative units)
+                vec1 = np.array([(shoulder.x - elbow.x) * w, (shoulder.y - elbow.y) * h, (shoulder.z - elbow.z) * 1000])  # Elbow to shoulder
+                vec2 = np.array([(wrist.x - elbow.x) * w, (wrist.y - elbow.y) * h, (wrist.z - elbow.z) * 1000])  # Elbow to wrist
+                # Compute angle using dot product
+                cos_angle = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2) + 1e-6)
+                angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+                # Adjust angle for SMPL-X (positive for flexion)
+                angle = np.pi - angle  # Invert to match SMPL-X Z-axis flexion
+                angle = np.clip(angle, 0.0, np.pi)  # Clip to [0, pi]
+                body_pose[0, 18, 2] = angle
+                # print(f"Frame {frame_count}: Right elbow angle = {angle:.2f} radians, "
+                #       f"Landmarks: shoulder=({shoulder.x:.2f}, {shoulder.y:.2f}, {shoulder.z:.2f}), "
+                #       f"elbow=({elbow.x:.2f}, {elbow.y:.2f}, {elbow.z:.2f}), "
+                #       f"wrist=({wrist.x:.2f}, {wrist.y:.2f}, {wrist.z:.2f})")
             else:
-                body_pose[0, 18, 2] = 0.0  # Reset if landmarks are not reliable
+                body_pose[0, 18, 2] = 0.0
+                # print(f"Frame {frame_count}: Resetting right elbow angle to 0.0 (low visibility)")
 
         # Forward pass to generate vertices and joints
         output = model(
@@ -141,12 +159,22 @@ try:
         vertices = output.vertices.detach().cpu().numpy().squeeze()
         joints = output.joints.detach().cpu().numpy().squeeze()
 
+        # Center vertices at origin
+        if vertices.size > 0:
+            centroid = vertices.mean(axis=0)
+            vertices -= centroid
+            v_min, v_max = vertices.min(axis=0), vertices.max(axis=0)
+            # print(f"Frame {frame_count}: Vertex range = {v_min} to {v_max}, Centroid = {centroid}")
+        else:
+            # print(f"Frame {frame_count}: No vertices generated!")
+            continue
+
         # Create trimesh object
-        vertex_colors = np.ones([vertices.shape[0], 4]) * [0.3, 0.3, 0.3, 0.8]
+        vertex_colors = np.ones([vertices.shape[0], 4]) * [0.5, 0.5, 0.5, 1.0]
         tri_mesh = trimesh.Trimesh(vertices=vertices, faces=model.faces, vertex_colors=vertex_colors)
 
         # Update scene with new mesh
-        for node in list(scene.get_nodes()):  # Use list to avoid modifying while iterating
+        for node in list(scene.get_nodes()):
             if isinstance(node, pyrender.Node) and isinstance(node.mesh, pyrender.Mesh):
                 scene.remove_node(node)
         mesh = pyrender.Mesh.from_trimesh(tri_mesh)
@@ -154,15 +182,18 @@ try:
 
         # Render to image
         try:
-            color, _ = renderer.render(scene)
+            color, depth = renderer.render(scene)
             color_bgr = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
+            # cv2.imwrite(os.path.join(output_dir, f"frame_{frame_count:04d}.png"), color_bgr)
             cv2.imshow('SMPL-X Render', color_bgr)
+            # print(f"Frame {frame_count}: Rendered successfully, saved to {output_dir}/frame_{frame_count:04d}.png")
         except Exception as e:
-            print(f"Rendering failed: {e}")
+            # print(f"Frame {frame_count}: Rendering failed: {e}")
             continue
 
         # Display webcam feed
         cv2.imshow('Webcam', frame)
+        frame_count += 1
         if cv2.waitKey(10) & 0xFF == ord('q'):
             break
 
