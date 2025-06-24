@@ -13,6 +13,21 @@ pose = mp_pose.Pose(static_image_mode=False,
                     min_tracking_confidence=0.5)
 mp_drawing = mp.solutions.drawing_utils
 
+def set_axes_equal(ax):
+    x_limits = ax.get_xlim3d()
+    y_limits = ax.get_ylim3d()
+    z_limits = ax.get_zlim3d()
+    x_range = abs(x_limits[1] - x_limits[0])
+    x_middle = np.mean(x_limits)
+    y_range = abs(y_limits[1] - y_limits[0])
+    y_middle = np.mean(y_limits)
+    z_range = abs(z_limits[1] - z_limits[0])
+    z_middle = np.mean(z_limits)
+    plot_radius = 0.5 * max([x_range, y_range, z_range])
+    ax.set_xlim3d([x_middle - plot_radius, x_middle + plot_radius])
+    ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
+    ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
+
 # ------------------ Angle Calculation ------------------
 def calculateAngle(a, b, c):
     x1, y1, _ = a
@@ -85,6 +100,7 @@ def plot3D_live(ax, landmarks3D, connections):
     ax.set_zlabel('Y')
     ax.set_title("Live 3D Pose")
     ax.view_init(elev=10, azim=10)
+    set_axes_equal(ax)
     plt.draw()
     plt.pause(0.001)
 
